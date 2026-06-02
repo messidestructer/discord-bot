@@ -1,7 +1,7 @@
 """
 Auto-promotion cog.
-Checks EP records and auto-promotes members in the Roblox group when they hit EP thresholds.
-Configure PROMOTION_RULES in .env as JSON, or edit the defaults below.
+Checks EP records every 6 hours and promotes members in the Roblox group automatically.
+Configure PROMOTION_RULES in .env as JSON, or use the defaults below.
 """
 import json
 import logging
@@ -21,12 +21,9 @@ from utils.roblox_api import (
 
 log = logging.getLogger("promotions")
 
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
+LOG_CHANNEL_ID       = int(os.getenv("LOG_CHANNEL_ID", "0"))
 PROMOTION_CHANNEL_ID = int(os.getenv("PROMOTION_CHANNEL_ID", "0") or os.getenv("LOG_CHANNEL_ID", "0"))
 
-# Default promotion rules: {min_ep: rank_number}
-# Override by setting PROMOTION_RULES env var as JSON, e.g.:
-# PROMOTION_RULES=[{"min_ep":0,"rank":1},{"min_ep":10,"rank":5},{"min_ep":25,"rank":10}]
 _DEFAULT_RULES = [
     {"min_ep": 0,   "rank": 1,  "name": "Recruit"},
     {"min_ep": 10,  "rank": 5,  "name": "Private"},
@@ -50,7 +47,6 @@ def _load_rules() -> list[dict]:
 
 
 def _target_rank(ep: int) -> tuple[int, str] | tuple[None, None]:
-    """Return (rank_number, name) for the highest tier this EP qualifies for."""
     rules = sorted(_load_rules(), key=lambda r: r["min_ep"], reverse=True)
     for rule in rules:
         if ep >= rule["min_ep"]:
@@ -68,7 +64,6 @@ class PromotionsCog(commands.Cog):
 
     @loop(hours=6)
     async def auto_promote_task(self):
-        """Runs every 6 hours and promotes any member whose EP qualifies them for a higher rank."""
         await self._run_promotions(guild=None, announce=True)
 
     @auto_promote_task.before_loop
@@ -76,20 +71,16 @@ class PromotionsCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _run_promotions(self, guild=None, announce=True) -> list[dict]:
-        """
-        Iterate all EP records and promote anyone who qualifies.
-        Returns list of {username, old_rank, new_rank, ep} dicts.
-        """
         if not os.getenv("ROBLOX_COOKIE"):
             log.warning("ROBLOX_COOKIE not set — skipping promotions")
             return []
 
-        records = await db.get_all_ep_records()
+        records  = await db.get_all_ep_records()
         promoted = []
 
         for key, rec in records.items():
-            username = rec.get("username", key)
-            ep = rec.get("ep", 0)
+            username    = rec.get("username", key)
+            ep          = rec.get("ep", 0)
             target_rank, target_name = _target_rank(ep)
             if target_rank is None:
                 continue
@@ -103,16 +94,16 @@ class PromotionsCog(commands.Cog):
                 continue  # not in group
 
             if target_rank <= current_rank:
-                continue  # already at or above target rank
+                continue  # already at or above target
 
             success = await set_group_rank_by_number(roblox_id, target_rank)
             if success:
                 entry = {
-                    "username": username,
-                    "old_rank": current_rank,
-                    "new_rank": target_rank,
-                    "new_rank_name": target_name,
-                    "ep": ep,
+                    "username":       username,
+                    "old_rank":       current_rank,
+                    "new_rank":       target_rank,
+                    "new_rank_name":  target_name,
+                    "ep":             ep,
                 }
                 promoted.append(entry)
                 await db.log_promotion(username, current_rank, target_rank, ep)
@@ -122,17 +113,15 @@ class PromotionsCog(commands.Cog):
                     ch = guild.get_channel(PROMOTION_CHANNEL_ID)
                     if ch:
                         embed = discord.Embed(
-                            title="🎉 Auto-Promotion",
-                            description=f"**{username}** has been promoted to **{target_name}** (Rank {target_rank})!",
-                            color=discord.Color.gold(),
+                            title       = "🎉 Auto-Promotion",
+                            description = f"**{username}** has been promoted to **{target_name}** (Rank {target_rank})!",
+                            color       = discord.Color.gold(),
                         )
-                        embed.add_field(name="EP", value=str(ep), inline=True)
+                        embed.add_field(name="EP",   value=str(ep),                          inline=True)
                         embed.add_field(name="Rank", value=f"{current_rank} → {target_rank}", inline=True)
                         await ch.send(embed=embed)
 
         return promoted
-
-    # ── Slash commands ────────────────────────────────────────────────────────
 
     @app_commands.command(name="checkpromotions", description="Manually run the EP promotion check.")
     @app_commands.default_permissions(manage_roles=True)
@@ -142,11 +131,14 @@ class PromotionsCog(commands.Cog):
         if not promoted:
             await interaction.followup.send("✅ No promotions needed — everyone is at the correct rank.")
             return
-        lines = [f"• **{p['username']}** → {p['new_rank_name']} (Rank {p['new_rank']}) — {p['ep']} EP" for p in promoted]
+        lines = [
+            f"• **{p['username']}** → {p['new_rank_name']} (Rank {p['new_rank']}) — {p['ep']} EP"
+            for p in promoted
+        ]
         embed = discord.Embed(
-            title=f"✅ Promoted {len(promoted)} members",
-            description="\n".join(lines),
-            color=discord.Color.green(),
+            title       = f"✅ Promoted {len(promoted)} member(s)",
+            description = "\n".join(lines),
+            color       = discord.Color.green(),
         )
         await interaction.followup.send(embed=embed)
 
@@ -155,14 +147,16 @@ class PromotionsCog(commands.Cog):
         rules = sorted(_load_rules(), key=lambda r: r["min_ep"])
         lines = []
         for r in rules:
-            name = r.get('name', f"Rank {r['rank']}")
-            lines.append(f"**{name}** — {r['min_ep']} EP (Roblox rank #{r['rank']})")
+            name = r.get("name", f"Rank {r['rank']}")
+            lines.append(
+                f"**{name}** — {r['min_ep']} EP (Roblox rank #{r['rank']})"
+            )
         embed = discord.Embed(
-            title="📈 Promotion Rules",
-            description="\n".join(lines),
-            color=discord.Color.blue(),
+            title       = "📈 Promotion Rules",
+            description = "\n".join(lines),
+            color       = discord.Color.blue(),
         )
-        embed.set_footer(text="Promotion check runs automatically every 6 hours. Use /checkpromotions to run manually.")
+        embed.set_footer(text="Auto-check runs every 6 hours. Use /checkpromotions to run manually.")
         await interaction.response.send_message(embed=embed)
 
 

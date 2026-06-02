@@ -17,7 +17,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log"),
+        logging.FileHandler("bot.log", encoding="utf-8"),
     ],
 )
 log = logging.getLogger("bot")
@@ -34,7 +34,7 @@ COGS = [
 ]
 
 intents = discord.Intents.default()
-intents.members = True
+intents.members         = True
 intents.message_content = True
 
 
@@ -47,12 +47,17 @@ class GroupBot(commands.Bot):
         )
 
     async def setup_hook(self):
+        failed = []
         for cog in COGS:
             try:
                 await self.load_extension(cog)
                 log.info(f"Loaded cog: {cog}")
             except Exception as e:
                 log.error(f"Failed to load cog {cog}: {e}", exc_info=True)
+                failed.append(cog)
+
+        if failed:
+            log.warning(f"Failed to load {len(failed)} cog(s): {failed}")
 
         guild_id = os.getenv("GUILD_ID")
         if guild_id:
@@ -66,19 +71,42 @@ class GroupBot(commands.Bot):
 
     async def on_ready(self):
         log.info(f"Logged in as {self.user} (ID: {self.user.id})")
+        log.info(f"Serving {len(self.guilds)} guild(s)")
         await self.change_presence(
             activity=discord.Activity(
-                type=discord.ActivityType.watching, name="the Roblox group"
+                type=discord.ActivityType.watching,
+                name="the Roblox group",
             )
         )
 
-    async def on_command_error(self, ctx, error):
-        if isinstance(error, commands.MissingPermissions):
-            await ctx.send("❌ You don't have permission to use this command.", ephemeral=True)
-        elif isinstance(error, commands.CommandNotFound):
-            pass
+    async def on_app_command_error(
+        self,
+        interaction: discord.Interaction,
+        error: discord.app_commands.AppCommandError,
+    ):
+        """Global slash-command error handler — catches anything not handled in the cog."""
+        if isinstance(error, discord.app_commands.MissingPermissions):
+            msg = "❌ You don't have permission to use that command."
+        elif isinstance(error, discord.app_commands.CommandOnCooldown):
+            msg = f"⏳ This command is on cooldown. Try again in {error.retry_after:.1f}s."
+        elif isinstance(error, discord.app_commands.BotMissingPermissions):
+            msg = f"❌ I'm missing permissions to do that: `{error.missing_permissions}`"
         else:
-            log.error(f"Unhandled command error: {error}", exc_info=True)
+            log.error(f"Unhandled app command error in /{interaction.command}: {error}", exc_info=True)
+            msg = "❌ Something went wrong. Please try again."
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            pass
+
+    async def on_command_error(self, ctx, error):
+        if isinstance(error, commands.CommandNotFound):
+            return
+        log.error(f"Unhandled prefix command error: {error}", exc_info=True)
 
 
 bot = GroupBot()
@@ -87,8 +115,12 @@ bot = GroupBot()
 async def main():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
-        log.critical("DISCORD_TOKEN not set in .env — bot cannot start.")
+        log.critical("DISCORD_TOKEN not set in .env — cannot start.")
         sys.exit(1)
+
+    if not os.getenv("ROBLOX_GROUP_ID"):
+        log.warning("ROBLOX_GROUP_ID not set — Roblox group commands will not work.")
+
     async with bot:
         await bot.start(token)
 

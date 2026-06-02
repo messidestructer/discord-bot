@@ -1,7 +1,7 @@
 """
 Moderation cog.
-/ban, /kick, /mute, /unmute, /warn, /warnings, /purge
-All actions are logged to the mod log channel.
+/ban, /kick, /mute, /unmute, /warn, /warnings, /clearwarnings, /purge, /slowmode, /userinfo
+All moderation actions are logged to the mod log channel.
 """
 import os
 from datetime import timedelta
@@ -9,6 +9,8 @@ from datetime import timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+import storage.database as db
 
 LOG_CHANNEL_ID = int(os.getenv("MOD_LOG_CHANNEL_ID", "0") or os.getenv("LOG_CHANNEL_ID", "0"))
 
@@ -27,7 +29,7 @@ class ModerationCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # ── /kick ────────────────────────────────────────────────────────────────
+    # ── /kick ─────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="kick", description="Kick a member from the server.")
     @app_commands.describe(member="Member to kick", reason="Reason for the kick")
@@ -44,7 +46,7 @@ class ModerationCog(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("❌ I don't have permission to kick that member.", ephemeral=True)
 
-    # ── /ban ─────────────────────────────────────────────────────────────────
+    # ── /ban ──────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="ban", description="Ban a member from the server.")
     @app_commands.describe(member="Member to ban", reason="Reason", delete_days="Days of messages to delete (0–7)")
@@ -72,9 +74,9 @@ class ModerationCog(commands.Cog):
             user = await self.bot.fetch_user(int(user_id))
             await interaction.guild.unban(user, reason=f"{interaction.user} — {reason}")
             embed = discord.Embed(title="✅ User Unbanned", color=discord.Color.green())
-            embed.add_field(name="User", value=f"{user} (ID: {user.id})")
+            embed.add_field(name="User",        value=f"{user} (ID: {user.id})")
             embed.add_field(name="Unbanned by", value=interaction.user.mention)
-            embed.add_field(name="Reason", value=reason)
+            embed.add_field(name="Reason",      value=reason)
             await interaction.response.send_message(embed=embed)
             await _mod_log(interaction.guild, embed)
         except (discord.NotFound, ValueError):
@@ -86,9 +88,9 @@ class ModerationCog(commands.Cog):
 
     @app_commands.command(name="mute", description="Timeout (mute) a member.")
     @app_commands.describe(
-        member="Member to mute",
-        minutes="Duration in minutes (max 40320 = 28 days)",
-        reason="Reason",
+        member  = "Member to mute",
+        minutes = "Duration in minutes (max 40320 = 28 days)",
+        reason  = "Reason",
     )
     @app_commands.default_permissions(moderate_members=True)
     async def mute(self, interaction: discord.Interaction, member: discord.Member, minutes: int = 10, reason: str = "No reason provided"):
@@ -97,11 +99,10 @@ class ModerationCog(commands.Cog):
             return
         minutes = max(1, min(40320, minutes))
         try:
-            duration = timedelta(minutes=minutes)
-            await member.timeout(duration, reason=f"{interaction.user} — {reason}")
+            await member.timeout(timedelta(minutes=minutes), reason=f"{interaction.user} — {reason}")
             embed = _action_embed(
                 f"🔇 Member Muted ({minutes}m)",
-                member, interaction.user, reason, discord.Color.dark_orange()
+                member, interaction.user, reason, discord.Color.dark_orange(),
             )
             await interaction.response.send_message(embed=embed)
             await _mod_log(interaction.guild, embed)
@@ -126,8 +127,8 @@ class ModerationCog(commands.Cog):
 
     @app_commands.command(name="purge", description="Delete messages in bulk.")
     @app_commands.describe(
-        amount="Number of messages to delete (1–200)",
-        member="Only delete messages from this member (optional)",
+        amount = "Number of messages to delete (1–200)",
+        member = "Only delete messages from this member (optional)",
     )
     @app_commands.default_permissions(manage_messages=True)
     async def purge(self, interaction: discord.Interaction, amount: int, member: discord.Member = None):
@@ -135,23 +136,22 @@ class ModerationCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         def check(msg):
-            if member:
-                return msg.author == member
-            return True
+            return msg.author == member if member else True
 
         try:
             deleted = await interaction.channel.purge(limit=amount, check=check)
-            msg = f"🗑️ Deleted **{len(deleted)}** messages"
+            msg = f"🗑️ Deleted **{len(deleted)}** message(s)"
             if member:
                 msg += f" from {member.mention}"
             await interaction.followup.send(msg, ephemeral=True)
 
             embed = discord.Embed(title="🗑️ Messages Purged", color=discord.Color.greyple())
-            embed.add_field(name="Count", value=str(len(deleted)), inline=True)
+            embed.add_field(name="Count",   value=str(len(deleted)),           inline=True)
             embed.add_field(name="Channel", value=interaction.channel.mention, inline=True)
-            embed.add_field(name="By", value=interaction.user.mention, inline=True)
+            embed.add_field(name="By",      value=interaction.user.mention,    inline=True)
             if member:
                 embed.add_field(name="Target", value=member.mention, inline=True)
+            embed.timestamp = discord.utils.utcnow()
             await _mod_log(interaction.guild, embed)
         except discord.Forbidden:
             await interaction.followup.send("❌ I don't have permission to delete messages.", ephemeral=True)
@@ -162,33 +162,28 @@ class ModerationCog(commands.Cog):
     @app_commands.describe(member="Member to warn", reason="Reason for the warning")
     @app_commands.default_permissions(manage_messages=True)
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
-        # Store warning in database
-        import storage.database as db_
-        async with db_._lock:
-            data = db_._load_raw()
+        async with db._lock:
+            data     = db._load_raw()
             warnings = data.setdefault("warnings", {})
-            uid = str(member.id)
-            if uid not in warnings:
-                warnings[uid] = []
-            warnings[uid].append({
-                "reason": reason,
-                "by": interaction.user.id,
+            uid      = str(member.id)
+            warnings.setdefault(uid, []).append({
+                "reason":  reason,
+                "by":      interaction.user.id,
                 "by_name": str(interaction.user),
-                "at": discord.utils.utcnow().isoformat(),
+                "at":      discord.utils.utcnow().isoformat(),
             })
-            db_._save_raw(data)
+            db._save_raw(data)
+            count = len(warnings[uid])
 
-        count = len(data["warnings"].get(str(member.id), []))
         embed = _action_embed(f"⚠️ Warning #{count}", member, interaction.user, reason, discord.Color.yellow())
         await interaction.response.send_message(embed=embed)
         await _mod_log(interaction.guild, embed)
 
-        # DM the member
         try:
             dm_embed = discord.Embed(
-                title=f"⚠️ Warning from {interaction.guild.name}",
-                description=f"**Reason:** {reason}\n\nThis is warning **#{count}** on your account.",
-                color=discord.Color.yellow(),
+                title       = f"⚠️ Warning from {interaction.guild.name}",
+                description = f"**Reason:** {reason}\n\nThis is warning **#{count}** on your record.",
+                color       = discord.Color.yellow(),
             )
             await member.send(embed=dm_embed)
         except discord.Forbidden:
@@ -200,8 +195,7 @@ class ModerationCog(commands.Cog):
     @app_commands.describe(member="Member to check")
     @app_commands.default_permissions(manage_messages=True)
     async def warnings(self, interaction: discord.Interaction, member: discord.Member):
-        import storage.database as db_
-        data = await db_.load()
+        data          = await db.load()
         user_warnings = data.get("warnings", {}).get(str(member.id), [])
 
         if not user_warnings:
@@ -213,11 +207,12 @@ class ModerationCog(commands.Cog):
             for i, w in enumerate(user_warnings)
         ]
         embed = discord.Embed(
-            title=f"⚠️ Warnings — {member.display_name}",
-            description="\n".join(lines),
-            color=discord.Color.yellow(),
+            title       = f"⚠️ Warnings — {member.display_name}",
+            description = "\n".join(lines),
+            color       = discord.Color.yellow(),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_footer(text=f"{len(user_warnings)} total warning(s)")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── /clearwarnings ────────────────────────────────────────────────────────
@@ -226,12 +221,14 @@ class ModerationCog(commands.Cog):
     @app_commands.describe(member="Member to clear")
     @app_commands.default_permissions(manage_guild=True)
     async def clearwarnings(self, interaction: discord.Interaction, member: discord.Member):
-        import storage.database as db_
-        async with db_._lock:
-            data = db_._load_raw()
+        async with db._lock:
+            data = db._load_raw()
+            count = len(data.get("warnings", {}).get(str(member.id), []))
             data.setdefault("warnings", {}).pop(str(member.id), None)
-            db_._save_raw(data)
-        await interaction.response.send_message(f"✅ Cleared all warnings for {member.mention}.", ephemeral=True)
+            db._save_raw(data)
+        await interaction.response.send_message(
+            f"✅ Cleared **{count}** warning(s) for {member.mention}.", ephemeral=True
+        )
 
     # ── /slowmode ─────────────────────────────────────────────────────────────
 
@@ -246,35 +243,42 @@ class ModerationCog(commands.Cog):
         else:
             await interaction.response.send_message(f"✅ Slowmode set to **{seconds}s**.", ephemeral=True)
 
-    # ── /userinfo ─────────────────────────────────────────────────────────────
+    # ── /userinfo ──────────────────────────────────────────────────────────────
 
     @app_commands.command(name="userinfo", description="Get info about a server member.")
     @app_commands.describe(member="Member to look up (default: yourself)")
     async def userinfo(self, interaction: discord.Interaction, member: discord.Member = None):
-        target = member or interaction.user
-        import storage.database as db_
-        roblox = await db_.get_roblox_username(target.id)
-        ep_rec = await db_.get_ep(roblox) if roblox else None
-        data = await db_.load()
+        target     = member or interaction.user
+        roblox     = await db.get_roblox_username(target.id)
+        ep_rec     = await db.get_ep(roblox) if roblox else None
+        data       = await db.load()
         warn_count = len(data.get("warnings", {}).get(str(target.id), []))
 
         embed = discord.Embed(title=f"👤 {target.display_name}", color=target.color)
         embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name="Joined Server", value=discord.utils.format_dt(target.joined_at, "R") if target.joined_at else "Unknown", inline=True)
+        embed.add_field(
+            name="Joined Server",
+            value=discord.utils.format_dt(target.joined_at, "R") if target.joined_at else "Unknown",
+            inline=True,
+        )
         embed.add_field(name="Account Created", value=discord.utils.format_dt(target.created_at, "R"), inline=True)
-        embed.add_field(name="Roblox", value=roblox or "Not verified", inline=True)
-        embed.add_field(name="EP", value=str(ep_rec["ep"]) if ep_rec else "N/A", inline=True)
-        embed.add_field(name="Warnings", value=str(warn_count), inline=True)
+        embed.add_field(name="Roblox",           value=roblox or "Not verified", inline=True)
+        embed.add_field(name="EP",               value=str(ep_rec["ep"]) if ep_rec else "N/A", inline=True)
+        embed.add_field(name="Warnings",         value=str(warn_count), inline=True)
         top_role = target.top_role
-        embed.add_field(name="Top Role", value=top_role.mention if top_role != interaction.guild.default_role else "None", inline=True)
+        embed.add_field(
+            name="Top Role",
+            value=top_role.mention if top_role != interaction.guild.default_role else "None",
+            inline=True,
+        )
         await interaction.response.send_message(embed=embed)
 
 
 def _action_embed(title, member, moderator, reason, color):
     embed = discord.Embed(title=title, color=color)
-    embed.add_field(name="Member", value=f"{member.mention} ({member})", inline=False)
-    embed.add_field(name="Moderator", value=moderator.mention, inline=True)
-    embed.add_field(name="Reason", value=reason, inline=True)
+    embed.add_field(name="Member",    value=f"{member.mention} ({member})", inline=False)
+    embed.add_field(name="Moderator", value=moderator.mention,              inline=True)
+    embed.add_field(name="Reason",    value=reason,                         inline=True)
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.timestamp = discord.utils.utcnow()
     return embed
