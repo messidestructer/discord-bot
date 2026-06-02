@@ -153,7 +153,10 @@ class PromotionsCog(commands.Cog):
     @app_commands.command(name="promotionrules", description="View the current EP promotion thresholds.")
     async def promotion_rules(self, interaction: discord.Interaction):
         rules = sorted(_load_rules(), key=lambda r: r["min_ep"])
-        lines = [f"**{r.get('name', f'Rank {r['rank']}')}** — {r['min_ep']} EP (Roblox rank #{r['rank']})" for r in rules]
+        lines = []
+        for r in rules:
+            name = r.get('name', f"Rank {r['rank']}")
+            lines.append(f"**{name}** — {r['min_ep']} EP (Roblox rank #{r['rank']})")
         embed = discord.Embed(
             title="📈 Promotion Rules",
             description="\n".join(lines),
