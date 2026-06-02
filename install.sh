@@ -30,7 +30,7 @@ fi
 
 echo ""
 echo "Installing Python dependencies..."
-pip3 install --break-system-packages -r requirements.txt 2>/dev/null || pip3 install -r requirements.txt
+python3 -m pip install --break-system-packages -r requirements.txt 2>/dev/null || pip3 install -r requirements.txt
 
 echo ""
 echo "======================================"
