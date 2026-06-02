@@ -22,6 +22,7 @@ _DEFAULT = {
     "verified_users": {},     # discord_id (str) -> roblox_username
     "pending_verifications": {},  # discord_id -> {code, roblox_username, expires_at}
     "promotion_log": [],      # auto-promotion records
+    "rank_log": [],
 }
 
 
@@ -89,9 +90,55 @@ async def set_ep(roblox_username: str, ep_delta: int, editor_discord_id: int, no
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "note": note,
         })
+
+        data["ep_audit_log"] = data["ep_audit_log"][-10000:]
         _save_raw(data)
         return dict(rec)
 
+async def set_ep_absolute(
+    roblox_username: str,
+    ep_amount: int,
+    editor_discord_id: int,
+    note: str = "",
+):
+    async with _lock:
+        data = _load_raw()
+
+        key = roblox_username.lower()
+
+        rec = data["ep_records"].get(key)
+
+        if rec is None:
+            rec = {
+                "username": roblox_username,
+                "ep": 0,
+                "discord_id": None,
+                "joined_at": datetime.now(timezone.utc).isoformat(),
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
+            data["ep_records"][key] = rec
+
+        old_ep = rec["ep"]
+
+        rec["ep"] = max(0, ep_amount)
+        rec["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+        data["ep_audit_log"].append({
+            "roblox_username": roblox_username,
+            "old_ep": old_ep,
+            "new_ep": rec["ep"],
+            "delta": rec["ep"] - old_ep,
+            "editor_discord_id": editor_discord_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "note": note,
+        })
+
+        _save_raw(data)
+
+        return {
+            **rec,
+            "old_ep": old_ep,
+        }
 
 async def get_leaderboard(limit: int = 20) -> list:
     data = await load()
@@ -103,6 +150,16 @@ async def get_leaderboard(limit: int = 20) -> list:
 async def get_all_ep_records() -> dict:
     data = await load()
     return data["ep_records"]
+
+async def is_roblox_verified(roblox_username: str) -> bool:
+    data = await load()
+
+    target = roblox_username.lower()
+
+    return any(
+        username.lower() == target
+        for username in data["verified_users"].values()
+    )
 
 
 # ── Event log ────────────────────────────────────────────────────────────────
@@ -198,6 +255,57 @@ async def get_discord_id_for_roblox(roblox_username: str) -> Optional[int]:
             return int(did)
     return None
 
+async def remove_verification(discord_id: int):
+    async with _lock:
+        data = _load_raw()
+
+        roblox_username = data["verified_users"].pop(
+            str(discord_id),
+            None,
+        )
+
+        data["pending_verifications"].pop(
+            str(discord_id),
+            None,
+        )
+
+        if roblox_username:
+            key = roblox_username.lower()
+
+            if key in data["ep_records"]:
+                data["ep_records"][key]["discord_id"] = None
+
+        _save_raw(data)
+
+async def claim_verification(
+    discord_id: int,
+    roblox_username: str,
+) -> bool:
+    async with _lock:
+        data = _load_raw()
+
+        target = roblox_username.lower()
+
+        for did, username in data["verified_users"].items():
+            if username.lower() == target and int(did) != discord_id:
+                return False
+
+        data["verified_users"][str(discord_id)] = roblox_username
+
+        data["pending_verifications"].pop(
+            str(discord_id),
+            None,
+        )
+
+        key = target
+
+        if key in data["ep_records"]:
+            data["ep_records"][key]["discord_id"] = discord_id
+
+        _save_raw(data)
+
+        return True
+
 
 # ── Promotion log ─────────────────────────────────────────────────────────────
 
@@ -211,4 +319,23 @@ async def log_promotion(roblox_username: str, old_rank: int, new_rank: int, ep: 
             "ep": ep,
             "promoted_at": datetime.now(timezone.utc).isoformat(),
         })
+        _save_raw(data)
+
+async def log_rank_change(
+    roblox_username: str,
+    old_rank: int,
+    new_rank: int,
+    editor_id: int,
+):
+    async with _lock:
+        data = _load_raw()
+
+        data["rank_log"].append({
+            "roblox_username": roblox_username,
+            "old_rank": old_rank,
+            "new_rank": new_rank,
+            "editor_id": editor_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
         _save_raw(data)

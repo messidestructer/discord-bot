@@ -31,7 +31,6 @@ COGS = [
     "cogs.moderation",
     "cogs.report",
     "cogs.profile",
-    "cogs.fun",
 ]
 
 intents = discord.Intents.default()
