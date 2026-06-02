@@ -33,8 +33,12 @@ _DEFAULT: dict = {
 def _load_raw() -> dict:
     if not os.path.exists(DB_PATH):
         return {k: (type(v)() if not isinstance(v, dict) else {}) for k, v in _DEFAULT.items()}
-    with open(DB_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(DB_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        log.exception("Database corrupted, rebuilding.")
+        data = _DEFAULT.copy()
     # Back-fill missing top-level keys
     for k, v in _DEFAULT.items():
         if k not in data:
@@ -147,6 +151,8 @@ async def set_ep_absolute(
             "timestamp":         datetime.now(timezone.utc).isoformat(),
             "note":              note,
         })
+        data["ep_audit_log"] = data["ep_audit_log"][-10_000:]
+
         _save_raw(data)
         return {**dict(rec), "old_ep": old_ep}
 

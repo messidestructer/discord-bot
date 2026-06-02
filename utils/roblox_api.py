@@ -11,11 +11,12 @@ import aiohttp
 
 log = logging.getLogger("roblox_api")
 
+
 ROBLOX_COOKIE = os.getenv("ROBLOX_COOKIE", "")
 GROUP_ID = os.getenv("ROBLOX_GROUP_ID", "")
 
 _session: Optional[aiohttp.ClientSession] = None
-
+timeout = aiohttp.ClientTimeout(total=15)
 
 async def get_session() -> aiohttp.ClientSession:
     global _session
@@ -23,7 +24,10 @@ async def get_session() -> aiohttp.ClientSession:
         headers = {}
         if ROBLOX_COOKIE:
             headers["Cookie"] = f".ROBLOSECURITY={ROBLOX_COOKIE}"
-        _session = aiohttp.ClientSession(headers=headers)
+        _session = aiohttp.ClientSession(
+            headers=headers,
+            timeout=timeout
+        )
     return _session
 
 
@@ -229,3 +233,8 @@ async def bloxlink_get_roblox_id(discord_id: int, guild_id: str) -> Optional[int
     except Exception as e:
         log.error(f"bloxlink_get_roblox_id({discord_id}): {e}")
     return None
+
+async def close_session():
+    global _session
+    if _session and not _session.closed:
+        await _session.close()

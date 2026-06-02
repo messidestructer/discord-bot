@@ -9,7 +9,8 @@ import sys
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-
+from utils.roblox_api import close_session
+from logging.handlers import RotatingFileHandler
 load_dotenv()
 
 logging.basicConfig(
@@ -17,7 +18,12 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log", encoding="utf-8"),
+        RotatingFileHandler(
+            "bot.log",
+            maxBytes=5_000_000,
+            backupCount=5,
+            encoding="utf-8"
+        )
     ],
 )
 log = logging.getLogger("bot")
@@ -122,7 +128,10 @@ async def main():
         log.warning("ROBLOX_GROUP_ID not set — Roblox group commands will not work.")
 
     async with bot:
-        await bot.start(token)
+        try:
+            await bot.start(token)
+        finally:
+            await close_session()
 
 
 if __name__ == "__main__":
