@@ -1,10 +1,8 @@
 [
-  { "name": "Training",    "ep": 2 },
-  { "name": "Patrol",      "ep": 1 },
-  { "name": "Tryout",      "ep": 3 },
-  { "name": "Joint Op",    "ep": 4 },
-  { "name": "Meeting",     "ep": 1 },
-  { "name": "Raid",        "ep": 3 },
-  { "name": "Defense",     "ep": 3 },
-  { "name": "Campaign",    "ep": 5 }
+  { "name": "Raid", "ep": 1 },
+  { "name": "Defense", "ep": 1 },
+  { "name": "Fairzone", "ep": 1 },
+  { "name": "Spar", "ep": 1 },
+  { "name": "Baited", "ep": 1 },
+  { "name": "Other", "ep": 1 }
 ]
