@@ -1,0 +1,10 @@
+[
+  { "name": "Training",    "ep": 2 },
+  { "name": "Patrol",      "ep": 1 },
+  { "name": "Tryout",      "ep": 3 },
+  { "name": "Joint Op",    "ep": 4 },
+  { "name": "Meeting",     "ep": 1 },
+  { "name": "Raid",        "ep": 3 },
+  { "name": "Defense",     "ep": 3 },
+  { "name": "Campaign",    "ep": 5 }
+]
