@@ -1,6 +1,6 @@
 # Roblox Group Discord Bot
 
-A fully-featured Discord bot for Roblox groups. EP tracking, event logging with OCR, auto-promotions, moderation, Google Sheets sync, and more. **100% free — no paid AI or services required.**
+A fully-featured Discord bot for Roblox groups. EP tracking, event logging with OCR, auto-promotions, moderation, Google Sheets sync, and more. **100% free — no paid AI or services required.** Test
 
 ---
 
