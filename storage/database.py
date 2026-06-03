@@ -25,6 +25,7 @@ _DEFAULT: dict = {
     "promotion_log":         [],   # auto-promotion records
     "rank_log":              [],   # manual rank-change records
     "warnings":              {},   # discord_id (str) -> list of warning dicts
+    "role_binds":            {},   # roblox_rank (str) -> discord_role_id (int)
 }
 
 

@@ -115,37 +115,88 @@ async def _resolve_members(
     return verified, unverified
 
 
+def _edit_distance(a: str, b: str) -> int:
+    """Simple iterative Levenshtein distance between two strings."""
+    if a == b:
+        return 0
+    la, lb = len(a), len(b)
+    if la == 0:
+        return lb
+    if lb == 0:
+        return la
+    prev = list(range(lb + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * lb
+        for j, cb in enumerate(b, 1):
+            curr[j] = min(
+                prev[j] + 1,
+                curr[j - 1] + 1,
+                prev[j - 1] + (0 if ca == cb else 1),
+            )
+        prev = curr
+    return prev[lb]
+
+
 async def _ocr_to_members(
     image_bytes: bytes,
     guild: discord.Guild,
 ) -> tuple[list[discord.Member], list[str]]:
     """
     Run OCR on an image, then try to match each name to a verified Discord member.
-    Returns (matched_members, unmatched_names).
+    Uses fuzzy matching (edit distance ≤ 4) so minor OCR typos still resolve.
+    Names with no close match (edit distance > 4) are silently discarded to
+    avoid cluttering the preview with garbage tokens.
+    Returns (matched_members, unmatched_but_close_names).
     """
     ocr_names = extract_usernames_from_image(image_bytes)
     if not ocr_names:
         return [], []
 
-    # Build lookup: roblox_username.lower() -> Member
+    # Build lookup: roblox_username.lower() -> (Member, canonical_name)
     data    = await db.load()
-    rbx_map: dict[str, discord.Member] = {}
+    rbx_map: dict[str, tuple[discord.Member, str]] = {}
     for discord_id_str, rblx_name in data["verified_users"].items():
         member = guild.get_member(int(discord_id_str))
         if member:
-            rbx_map[rblx_name.lower()] = member
+            rbx_map[rblx_name.lower()] = (member, rblx_name)
+
+    FUZZY_THRESHOLD = 4  # max edit distance to consider a match
 
     matched:   list[discord.Member] = []
-    unmatched: list[str]            = []
-    seen_ids: set[int]              = set()
+    unmatched: list[str]            = []  # close but didn't resolve to a member
+    seen_ids:  set[int]             = set()
 
     for name in ocr_names:
-        member = rbx_map.get(name.lower())
-        if member and member.id not in seen_ids:
-            matched.append(member)
-            seen_ids.add(member.id)
-        else:
+        name_lower = name.lower()
+
+        # 1. Exact match first
+        exact = rbx_map.get(name_lower)
+        if exact:
+            member, _ = exact
+            if member.id not in seen_ids:
+                matched.append(member)
+                seen_ids.add(member.id)
+            continue
+
+        # 2. Fuzzy match — find the closest verified username
+        best_dist   = FUZZY_THRESHOLD + 1
+        best_member = None
+
+        for rbx_lower, (member, _) in rbx_map.items():
+            if member.id in seen_ids:
+                continue
+            dist = _edit_distance(name_lower, rbx_lower)
+            if dist < best_dist:
+                best_dist   = dist
+                best_member = member
+
+        if best_member is not None and best_dist <= FUZZY_THRESHOLD:
+            matched.append(best_member)
+            seen_ids.add(best_member.id)
+        elif best_dist <= FUZZY_THRESHOLD:
+            # Close to a verified name but member already matched — keep as unmatched
             unmatched.append(name)
+        # else: too far from any verified name — silently discard (OCR noise)
 
     return matched, unmatched
 
@@ -832,8 +883,8 @@ def _preview_embed(
         if len(ocr_unmatched) > 20:
             lines.append(f"...and {len(ocr_unmatched) - 20} more")
         embed.add_field(
-            name=f"🔍 OCR found but not matched to a Discord member ({len(ocr_unmatched)})",
-            value="\n".join(lines),
+            name=f"🔍 OCR: close match but not in server ({len(ocr_unmatched)})",
+            value="*These names were similar to a verified member but couldn't be resolved.*\n" + "\n".join(lines),
             inline=False,
         )
 

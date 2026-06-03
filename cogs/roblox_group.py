@@ -157,6 +157,13 @@ class RobloxGroupCog(commands.Cog):
         except Exception as e:
             log.warning(f"Failed to log rank change: {e}")
 
+        # Sync role binds to reflect the new rank
+        try:
+            from cogs.role_binds import sync_member_roles
+            await sync_member_roles(member, roblox_username)
+        except Exception as e:
+            log.warning(f"Role bind sync failed after /rank: {e}")
+
         ch = _log_channel(interaction.guild)
         if ch:
             try:

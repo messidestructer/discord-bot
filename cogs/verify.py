@@ -9,6 +9,7 @@ on_member_join: silently tries Bloxlink; if found, completes verification automa
 /verify: same priority, falls back to manual code flow if Bloxlink can't find them.
 /bloxlink-sync: force a Bloxlink re-check for yourself.
 /reverify: staff reset.
+/verify-all: (owner only) bulk-verify every unverified member via Bloxlink.
 """
 import logging
 import os
@@ -26,6 +27,8 @@ from utils.roblox_api import (
     get_user_id_by_name,
     get_user_profile,
 )
+
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 log = logging.getLogger("verify")
 
@@ -66,6 +69,7 @@ async def _complete_verification(
 ) -> bool:
     """
     Persist verification, set nickname to Roblox username, assign Verified role.
+    Also triggers role-bind sync if the role_binds cog is loaded.
     Returns False if the Roblox account is already claimed by another Discord account.
     """
     success = await db.claim_verification(discord_id, roblox_username)
@@ -88,6 +92,13 @@ async def _complete_verification(
                 await m.add_roles(role)
             except discord.Forbidden:
                 pass
+
+    # Sync role binds (fire-and-forget; import lazily to avoid circular imports)
+    try:
+        from cogs.role_binds import sync_member_roles
+        await sync_member_roles(m, roblox_username)
+    except Exception as e:
+        log.warning(f"Role bind sync failed for {m}: {e}")
 
     return True
 
@@ -344,6 +355,96 @@ class VerifyCog(commands.Cog):
                 inline=True,
             )
         await interaction.response.send_message(embed=embed)
+
+    # ── /verify-all ───────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="verify-all",
+        description="(Owner only) Bulk-verify all unverified members via Bloxlink.",
+    )
+    async def verify_all(self, interaction: discord.Interaction):
+        if OWNER_ID and interaction.user.id != OWNER_ID:
+            await interaction.response.send_message(
+                "❌ Only the bot owner can run this command.", ephemeral=True
+            )
+            return
+
+        if not os.getenv("BLOXLINK_API_KEY"):
+            await interaction.response.send_message(
+                "❌ Bloxlink is not configured (`BLOXLINK_API_KEY` missing).", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        success_count  = 0
+        skip_verified  = 0
+        skip_conflict  = 0
+        skip_not_found = 0
+        errors         = 0
+
+        members = [m for m in interaction.guild.members if not m.bot]
+
+        for member in members:
+            # Already verified in our DB?
+            existing = await db.get_roblox_username(member.id)
+            if existing:
+                # Make sure they have the role
+                await _assign_verified_role(member, interaction.guild)
+                skip_verified += 1
+                continue
+
+            roblox_id, roblox_username = await _try_bloxlink(member.id, interaction.guild_id)
+            if not roblox_id:
+                skip_not_found += 1
+                continue
+
+            if await db.is_roblox_verified(roblox_username):
+                skip_conflict += 1
+                continue
+
+            try:
+                ok = await _complete_verification(
+                    member, interaction.guild, member.id, roblox_username
+                )
+                if ok:
+                    success_count += 1
+                    log.info(f"verify-all: auto-verified {member} as {roblox_username}")
+                    try:
+                        embed = discord.Embed(
+                            title="✅ Automatically Verified!",
+                            description=(
+                                f"You've been verified in **{interaction.guild.name}** "
+                                f"as **{roblox_username}** via Bloxlink.\n"
+                                "Your nickname has been updated."
+                            ),
+                            color=discord.Color.green(),
+                        )
+                        await member.send(embed=embed)
+                    except discord.Forbidden:
+                        pass
+                else:
+                    skip_conflict += 1
+            except Exception as e:
+                log.warning(f"verify-all: error verifying {member}: {e}")
+                errors += 1
+
+        lines = [
+            f"✅ **{success_count}** newly verified via Bloxlink",
+            f"🔁 **{skip_verified}** already verified (roles refreshed)",
+            f"🔍 **{skip_not_found}** not found in Bloxlink",
+            f"⚠️ **{skip_conflict}** skipped (Roblox account already claimed)",
+        ]
+        if errors:
+            lines.append(f"❌ **{errors}** errors (check logs)")
+
+        embed = discord.Embed(
+            title="🔗 Verify-All Complete",
+            description="\n".join(lines),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text=f"Checked {len(members)} members")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /reverify ─────────────────────────────────────────────────────────────
 

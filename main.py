@@ -30,6 +30,7 @@ log = logging.getLogger("bot")
 
 COGS = [
     "cogs.verify",
+    "cogs.role_binds",
     "cogs.roblox_group",
     "cogs.ep",
     "cogs.log_event",
