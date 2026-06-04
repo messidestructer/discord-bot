@@ -1,9 +1,9 @@
 """
 Roblox group management commands.
-/rank          — set a member's rank (autocomplete from group roles)
-/kickroblox    — kick a member from the group
-/joinrequest   — view, accept, or deny pending join requests
-/grouproles    — list all group roles
+/rank        — set a member's rank
+/kickroblox  — kick from group
+/joinrequest — view/accept/deny pending join requests
+/grouproles  — list all group roles
 """
 import logging
 import os
@@ -24,6 +24,7 @@ from utils.roblox_api import (
     set_group_rank_by_number,
     get_group_rank,
     get_group_role_name,
+    _extract_requester,
 )
 
 log = logging.getLogger("roblox_group")
@@ -32,15 +33,13 @@ GROUP_ID            = os.getenv("ROBLOX_GROUP_ID", "")
 LOG_CHANNEL_ID      = int(os.getenv("LOG_CHANNEL_ID", "0"))
 MAX_ASSIGNABLE_RANK = int(os.getenv("MAX_ASSIGNABLE_RANK", "250"))
 
-# ── Role / join-request caches ────────────────────────────────────────────────
-
 _roles_cache:      list[dict] = []
 _roles_cache_time: float      = 0
-_ROLES_TTL = 300  # 5 minutes
+_ROLES_TTL = 300
 
 _join_requests_cache:      list[dict] = []
 _join_requests_cache_time: float      = 0
-_JOIN_REQUESTS_TTL = 30  # 30 seconds
+_JOIN_REQUESTS_TTL = 30
 
 
 async def _get_cached_roles() -> list[dict]:
@@ -63,7 +62,7 @@ async def _get_cached_join_requests() -> list[dict]:
     return _join_requests_cache
 
 
-def _log_channel(guild: discord.Guild) -> discord.TextChannel | None:
+def _log_channel(guild: discord.Guild):
     if LOG_CHANNEL_ID:
         return guild.get_channel(LOG_CHANNEL_ID)
     return None
@@ -81,46 +80,41 @@ class RobloxGroupCog(commands.Cog):
         rank_number = "Rank number to assign — start typing to search roles",
     )
     @app_commands.default_permissions(manage_roles=True)
-    async def rank(
-        self,
-        interaction: discord.Interaction,
-        member:      discord.Member,
-        rank_number: int,
-    ):
+    async def rank(self, interaction: discord.Interaction, member: discord.Member, rank_number: int):
         await interaction.response.defer()
 
         if member.id == interaction.user.id:
             await interaction.followup.send("❌ You cannot rank yourself.")
             return
 
-        roblox_username = await db.get_roblox_username(member.id)
-        if not roblox_username:
+        info = await db.get_roblox_info(member.id)
+        if not info:
             await interaction.followup.send(
-                f"❌ {member.mention} hasn't verified their Roblox account yet. "
-                "They need to run `/verify` first."
+                f"❌ {member.mention} hasn't verified their Roblox account yet. They need to run `/verify` first."
             )
             return
+
+        roblox_username = info.get("roblox_username", "")
+        roblox_id       = info.get("roblox_id", 0) or 0
 
         if rank_number > MAX_ASSIGNABLE_RANK:
-            await interaction.followup.send(
-                f"❌ You cannot assign ranks above **{MAX_ASSIGNABLE_RANK}**."
-            )
+            await interaction.followup.send(f"❌ You cannot assign ranks above **{MAX_ASSIGNABLE_RANK}**.")
             return
 
-        roles = await _get_cached_roles()
+        roles       = await _get_cached_roles()
         valid_ranks = {r["rank"] for r in roles}
         if rank_number not in valid_ranks:
             await interaction.followup.send(
-                f"❌ Rank **{rank_number}** does not exist in this group. "
-                "Use `/grouproles` to see valid ranks."
+                f"❌ Rank **{rank_number}** does not exist in this group. Use `/grouproles` to see valid ranks."
             )
             return
 
-        roblox_id = await get_user_id_by_name(roblox_username)
+        # Resolve roblox_id if needed
         if not roblox_id:
-            await interaction.followup.send(
-                f"❌ Couldn't find Roblox user **{roblox_username}**."
-            )
+            roblox_id = await get_user_id_by_name(roblox_username) or 0
+
+        if not roblox_id:
+            await interaction.followup.send(f"❌ Couldn't find Roblox user **{roblox_username}**.")
             return
 
         old_rank = await get_group_rank(roblox_id)
@@ -157,7 +151,6 @@ class RobloxGroupCog(commands.Cog):
         except Exception as e:
             log.warning(f"Failed to log rank change: {e}")
 
-        # Sync role binds to reflect the new rank
         try:
             from cogs.role_binds import sync_member_roles
             await sync_member_roles(member, roblox_username)
@@ -193,8 +186,7 @@ class RobloxGroupCog(commands.Cog):
         roles = await _get_cached_roles()
         if not roles:
             await interaction.followup.send(
-                "❌ Could not fetch group roles. Check that `ROBLOX_GROUP_ID` and "
-                "`ROBLOX_COOKIE` are set correctly.",
+                "❌ Could not fetch group roles. Check that `ROBLOX_GROUP_ID` and `ROBLOX_COOKIE` are set correctly.",
                 ephemeral=True,
             )
             return
@@ -220,19 +212,21 @@ class RobloxGroupCog(commands.Cog):
             await interaction.followup.send("❌ You cannot kick yourself.")
             return
 
-        roblox_username = await db.get_roblox_username(member.id)
-        if not roblox_username:
+        info = await db.get_roblox_info(member.id)
+        if not info:
             await interaction.followup.send(
-                f"❌ {member.mention} hasn't verified their Roblox account — "
-                "cannot determine their group membership."
+                f"❌ {member.mention} hasn't verified their Roblox account — cannot determine their group membership."
             )
             return
 
-        roblox_id = await get_user_id_by_name(roblox_username)
+        roblox_username = info.get("roblox_username", "")
+        roblox_id       = info.get("roblox_id", 0) or 0
+
         if not roblox_id:
-            await interaction.followup.send(
-                f"❌ Couldn't resolve Roblox user **{roblox_username}**."
-            )
+            roblox_id = await get_user_id_by_name(roblox_username) or 0
+
+        if not roblox_id:
+            await interaction.followup.send(f"❌ Couldn't resolve Roblox user **{roblox_username}**.")
             return
 
         success = await kick_from_group(roblox_id)
@@ -279,8 +273,9 @@ class RobloxGroupCog(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=(operation == "view"))
 
+        # Always do a fresh fetch — don't use stale cache for writes
         requests = await get_join_requests()
-        # Invalidate cache after fetching
+        # Update cache
         global _join_requests_cache, _join_requests_cache_time
         _join_requests_cache      = requests or []
         _join_requests_cache_time = time()
@@ -299,41 +294,42 @@ class RobloxGroupCog(commands.Cog):
         if operation in ("accept_one", "deny_one"):
             if not username:
                 await interaction.followup.send(
-                    "❌ Please provide the **username** of the specific user you want to act on.",
+                    "❌ Please provide the username of the specific user you want to act on.",
                     ephemeral=True,
                 )
                 return
 
-            pending_names = {
-                req.get("requester", {}).get("username", "").lower()
-                for req in requests
-            }
-            if username.lower() not in pending_names:
+            # Find the request by username
+            target_req = None
+            for req in requests:
+                uid, uname = _extract_requester(req)
+                if uname.lower() == username.lower():
+                    target_req = (uid, uname)
+                    break
+
+            if not target_req:
                 await interaction.followup.send(
-                    f"❌ **{username}** does not have a pending join request.",
-                    ephemeral=True,
+                    f"❌ **{username}** does not have a pending join request.", ephemeral=True
                 )
                 return
 
-            roblox_id = await get_user_id_by_name(username)
-            if not roblox_id:
-                await interaction.followup.send(
-                    f"❌ Roblox user **{username}** not found.", ephemeral=True
-                )
+            uid, uname = target_req
+            if not uid:
+                await interaction.followup.send(f"❌ Could not determine Roblox ID for **{uname}**.", ephemeral=True)
                 return
 
             if operation == "accept_one":
-                ok   = await accept_join_request(roblox_id)
+                ok   = await accept_join_request(uid)
                 verb = "Accepted"
             else:
-                ok   = await deny_join_request(roblox_id)
+                ok   = await deny_join_request(uid)
                 verb = "Denied"
 
             if ok:
-                await interaction.followup.send(f"✅ {verb} join request for **{username}**.")
+                await interaction.followup.send(f"✅ {verb} join request for **{uname}**.")
             else:
                 await interaction.followup.send(
-                    f"❌ Failed — **{username}** may no longer have a pending request."
+                    f"❌ Failed — **{uname}** may no longer have a pending request."
                 )
             return
 
@@ -345,8 +341,9 @@ class RobloxGroupCog(commands.Cog):
         success_count = 0
         fail_count    = 0
         for req in requests:
-            uid = req.get("requester", {}).get("userId")
+            uid, uname = _extract_requester(req)
             if not uid:
+                fail_count += 1
                 continue
             ok = await (accept_join_request(uid) if operation == "accept_all" else deny_join_request(uid))
             if ok:
@@ -367,7 +364,7 @@ class RobloxGroupCog(commands.Cog):
         requests = await _get_cached_join_requests()
         choices  = []
         for req in requests:
-            name = req.get("requester", {}).get("username", "")
+            _, name = _extract_requester(req)
             if not current or current.lower() in name.lower():
                 choices.append(app_commands.Choice(name=name, value=name))
             if len(choices) >= 25:
@@ -404,7 +401,7 @@ class JoinRequestsView(discord.ui.View):
         self.stop()
         count = 0
         for req in self.requests:
-            uid = req.get("requester", {}).get("userId")
+            uid, _ = _extract_requester(req)
             if uid and await accept_join_request(uid):
                 count += 1
         await interaction.followup.send(f"✅ Accepted **{count}/{len(self.requests)}** join requests.")
@@ -420,20 +417,16 @@ class JoinRequestsView(discord.ui.View):
         self.stop()
         count = 0
         for req in self.requests:
-            uid = req.get("requester", {}).get("userId")
+            uid, _ = _extract_requester(req)
             if uid and await deny_join_request(uid):
                 count += 1
         await interaction.followup.send(f"✅ Denied **{count}/{len(self.requests)}** join requests.")
 
 
-# ── Embed helpers ──────────────────────────────────────────────────────────────
-
 def _requests_embed(requests: list) -> discord.Embed:
-    chunks = requests[:20]
-    lines  = []
-    for req in chunks:
-        uid   = req.get("requester", {}).get("userId", "?")
-        uname = req.get("requester", {}).get("username", "Unknown")
+    lines = []
+    for req in requests[:20]:
+        uid, uname = _extract_requester(req)
         lines.append(f"• **{uname}** (ID: `{uid}`)")
     if len(requests) > 20:
         lines.append(f"*...and {len(requests) - 20} more*")

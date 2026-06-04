@@ -1,8 +1,8 @@
 """
 EP (Event Points) tracking cog.
 /ep manage  — add, subtract, or set EP for a Discord member
-/ep check   — check a member's EP
-/ep audit   — view recent EP changes for a member
+/ep check   — check EP
+/ep audit   — view recent EP changes
 /leaderboard
 """
 import os
@@ -14,11 +14,11 @@ from discord import app_commands
 from discord.ext import commands
 
 import storage.database as db
+from utils.roblox_api import get_user_id_by_name
 
 LOG_CHANNEL_ID     = int(os.getenv("LOG_CHANNEL_ID", "0"))
 EP_MANAGER_ROLE_ID = int(os.getenv("EP_MANAGER_ROLE_ID", "0"))
 
-# Rate limit: max 5 EP edits per user per 60 seconds
 _rate_buckets: dict[int, list[float]] = defaultdict(list)
 RATE_LIMIT  = 5
 RATE_WINDOW = 60
@@ -39,6 +39,14 @@ def _has_ep_permission(interaction: discord.Interaction) -> bool:
         if role and role in interaction.user.roles:
             return True
     return interaction.user.guild_permissions.manage_roles
+
+
+async def _get_verified_info(member: discord.Member):
+    """Returns (roblox_id, roblox_username) or (None, None) if unverified."""
+    info = await db.get_roblox_info(member.id)
+    if not info:
+        return None, None
+    return info.get("roblox_id", 0) or 0, info.get("roblox_username", "")
 
 
 class EPCog(commands.Cog):
@@ -76,34 +84,36 @@ class EPCog(commands.Cog):
             await interaction.response.send_message("❌ Amount must be a positive number.", ephemeral=True)
             return
         if not _check_rate_limit(interaction.user.id):
-            await interaction.response.send_message(
-                "⏳ You're editing EP too quickly. Wait a moment.", ephemeral=True
-            )
+            await interaction.response.send_message("⏳ You're editing EP too quickly. Wait a moment.", ephemeral=True)
             return
 
-        roblox_username = await db.get_roblox_username(member.id)
+        roblox_id, roblox_username = await _get_verified_info(member)
         if not roblox_username:
             await interaction.response.send_message(
-                f"❌ {member.mention} hasn't verified their Roblox account yet — "
-                "they need to run `/verify` first.",
+                f"❌ {member.mention} hasn't verified their Roblox account yet — they need to run `/verify` first.",
                 ephemeral=True,
             )
             return
 
+        # Ensure roblox_id is populated (fetch if stored as 0 from old migration)
+        if not roblox_id:
+            roblox_id = await get_user_id_by_name(roblox_username) or 0
+            if roblox_id:
+                await db.claim_verification(member.id, roblox_id, roblox_username)
+
         await interaction.response.defer()
 
+        current = await db.get_ep_by_id(roblox_id) if roblox_id else await db.get_ep(roblox_username)
+        old_ep  = current["ep"] if current else 0
+
         if operation == "add":
-            current = await db.get_ep(roblox_username)
-            old_ep  = current["ep"] if current else 0
-            rec     = await db.set_ep(roblox_username, +amount, interaction.user.id, note)
-            title   = "➕ EP Added"
+            rec   = await db.set_ep(roblox_username, +amount, interaction.user.id, note, roblox_id=roblox_id or None)
+            title = "➕ EP Added"
         elif operation == "subtract":
-            current = await db.get_ep(roblox_username)
-            old_ep  = current["ep"] if current else 0
-            rec     = await db.set_ep(roblox_username, -amount, interaction.user.id, note)
-            title   = "➖ EP Removed"
+            rec   = await db.set_ep(roblox_username, -amount, interaction.user.id, note, roblox_id=roblox_id or None)
+            title = "➖ EP Removed"
         else:  # set
-            rec    = await db.set_ep_absolute(roblox_username, amount, interaction.user.id, note)
+            rec    = await db.set_ep_absolute(roblox_username, amount, interaction.user.id, note, roblox_id=roblox_id or None)
             old_ep = rec.get("old_ep", 0)
             title  = "✏️ EP Set"
 
@@ -119,30 +129,28 @@ class EPCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         target = member or interaction.user
 
-        roblox_username = await db.get_roblox_username(target.id)
+        roblox_id, roblox_username = await _get_verified_info(target)
         if not roblox_username:
             await interaction.followup.send(
-                f"❌ {target.mention} hasn't verified their Roblox account yet. "
-                "Use `/verify` to link one.",
+                f"❌ {target.mention} hasn't verified their Roblox account yet. Use `/verify` to link one.",
                 ephemeral=True,
             )
             return
 
-        rec = await db.get_ep(roblox_username)
+        rec = await db.get_ep_by_id(roblox_id) if roblox_id else await db.get_ep(roblox_username)
         ep  = rec["ep"] if rec else 0
 
-        # Leaderboard position
         leaderboard = await db.get_leaderboard(9999)
         position    = next(
-            (i + 1 for i, r in enumerate(leaderboard) if r.get("username", "").lower() == roblox_username.lower()),
+            (i + 1 for i, r in enumerate(leaderboard) if r.get("roblox_id") == roblox_id or r.get("username", "").lower() == roblox_username.lower()),
             None,
         )
 
         embed = discord.Embed(title=f"📊 EP — {target.display_name}", color=discord.Color.blue())
         embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name="Discord",    value=target.mention,    inline=True)
-        embed.add_field(name="Roblox",     value=roblox_username,   inline=True)
-        embed.add_field(name="Total EP",   value=str(ep),           inline=True)
+        embed.add_field(name="Discord",    value=target.mention,  inline=True)
+        embed.add_field(name="Roblox",     value=roblox_username, inline=True)
+        embed.add_field(name="Total EP",   value=str(ep),         inline=True)
         if position:
             embed.add_field(name="Rank", value=f"#{position}", inline=True)
         if rec and rec.get("last_updated"):
@@ -158,16 +166,11 @@ class EPCog(commands.Cog):
         limit="Number of entries to show (default 10, max 25)",
     )
     @app_commands.default_permissions(manage_roles=True)
-    async def ep_audit(
-        self,
-        interaction: discord.Interaction,
-        member: discord.Member,
-        limit: int = 10,
-    ):
+    async def ep_audit(self, interaction: discord.Interaction, member: discord.Member, limit: int = 10):
         await interaction.response.defer(ephemeral=True)
         limit = min(max(limit, 1), 25)
 
-        roblox_username = await db.get_roblox_username(member.id)
+        roblox_id, roblox_username = await _get_verified_info(member)
         if not roblox_username:
             await interaction.followup.send(
                 f"❌ {member.mention} has no verified Roblox account — no EP history to show.",
@@ -178,8 +181,9 @@ class EPCog(commands.Cog):
         data  = await db.load()
         audit = [
             e for e in data["ep_audit_log"]
-            if e["roblox_username"].lower() == roblox_username.lower()
-        ][-limit:][::-1]  # most recent first
+            if (roblox_id and e.get("roblox_id") == roblox_id)
+            or e.get("roblox_username", "").lower() == roblox_username.lower()
+        ][-limit:][::-1]
 
         if not audit:
             await interaction.followup.send(
@@ -239,17 +243,7 @@ class EPCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _ep_embed(
-    title:           str,
-    member:          discord.Member,
-    roblox_username: str,
-    old_ep:          int,
-    new_ep:          int,
-    editor:          discord.Member,
-    note:            str,
-) -> discord.Embed:
+def _ep_embed(title, member, roblox_username, old_ep, new_ep, editor, note):
     delta = new_ep - old_ep
     color = discord.Color.green() if delta >= 0 else discord.Color.red()
     embed = discord.Embed(title=title, color=color)
