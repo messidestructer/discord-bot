@@ -12,7 +12,8 @@ import aiohttp
 log = logging.getLogger("roblox_api")
 
 ROBLOX_COOKIE = os.getenv("ROBLOX_COOKIE", "")
-GROUP_ID      = os.getenv("ROBLOX_GROUP_ID", "")
+def get_group_id():
+    return os.getenv("ROBLOX_GROUP_ID", "").strip()
 
 _session: Optional[aiohttp.ClientSession] = None
 _timeout = aiohttp.ClientTimeout(total=15)
@@ -68,7 +69,7 @@ async def get_profile_description(user_id: int) -> Optional[str]:
 # ── Group helpers ─────────────────────────────────────────────────────────────
 
 async def get_group_rank(user_id: int, group_id: str = None) -> Optional[int]:
-    gid = group_id or GROUP_ID
+    gid = group_id or get_group_id()
     session = await get_session()
     try:
         async with session.get(
@@ -86,7 +87,7 @@ async def get_group_rank(user_id: int, group_id: str = None) -> Optional[int]:
 
 
 async def get_group_role_name(user_id: int, group_id: str = None) -> Optional[str]:
-    gid = group_id or GROUP_ID
+    gid = group_id or get_group_id()
     session = await get_session()
     try:
         async with session.get(
@@ -104,7 +105,7 @@ async def get_group_role_name(user_id: int, group_id: str = None) -> Optional[st
 
 
 async def get_group_roles(group_id: str = None) -> list:
-    gid = group_id or GROUP_ID
+    gid = group_id or get_group_id()
     session = await get_session()
     try:
         async with session.get(f"https://groups.roblox.com/v1/groups/{gid}/roles") as resp:
@@ -120,7 +121,7 @@ async def get_group_roles(group_id: str = None) -> list:
 
 
 async def set_group_rank(user_id: int, rank_id: int, group_id: str = None) -> bool:
-    gid = group_id or GROUP_ID
+    gid = group_id or get_group_id()
     session = await get_session()
     try:
         async with session.patch(
@@ -146,7 +147,7 @@ async def set_group_rank_by_number(user_id: int, rank_number: int, group_id: str
 
 
 async def kick_from_group(user_id: int, group_id: str = None) -> bool:
-    gid = group_id or GROUP_ID
+    gid = group_id or get_group_id()
     session = await get_session()
     try:
         async with session.delete(
@@ -169,7 +170,7 @@ async def kick_from_group(user_id: int, group_id: str = None) -> bool:
 #     nextPageCursor: "..." }
 
 async def get_join_requests(group_id: str = None) -> list:
-    gid = group_id or GROUP_ID
+    gid = group_id or get_group_id()
     if not gid:
         log.error("get_join_requests: ROBLOX_GROUP_ID not set")
         return []
@@ -236,7 +237,7 @@ def _extract_requester(req: dict) -> tuple:
 
 
 async def accept_join_request(user_id: int, group_id: str = None) -> bool:
-    gid = group_id or GROUP_ID
+    gid = group_id or get_group_id()
     session = await get_session()
     try:
         async with session.post(
@@ -252,7 +253,7 @@ async def accept_join_request(user_id: int, group_id: str = None) -> bool:
 
 
 async def deny_join_request(user_id: int, group_id: str = None) -> bool:
-    gid = group_id or GROUP_ID
+    gid = group_id or get_group_id()
     session = await get_session()
     try:
         async with session.delete(
